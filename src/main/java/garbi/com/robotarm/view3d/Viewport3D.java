@@ -14,7 +14,7 @@ import javafx.scene.shape.Box;
 /** Panel que contiene la escena 3D (suelo, luces, ejes y, luego, el brazo). */
 public class Viewport3D extends Pane {
 
-    private final Group world = new Group();            // aquí se agregará el brazo
+    private final Group world = new Group();
     private final OrbitCamera orbit = new OrbitCamera();
 
     public Viewport3D(RobotArm arm) {
