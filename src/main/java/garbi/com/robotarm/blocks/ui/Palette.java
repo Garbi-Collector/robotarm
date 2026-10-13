@@ -20,7 +20,6 @@ public class Palette extends VBox {
         getChildren().add(title);
 
         for (BlockType type : BlockType.values()) {
-            if (type.isContainer()) continue; // "Repetir" llega en el paso 4
             BlockNode item = new BlockNode(BlockFactory.create(type));
             drag.makePaletteItem(item, type);
             getChildren().add(item);

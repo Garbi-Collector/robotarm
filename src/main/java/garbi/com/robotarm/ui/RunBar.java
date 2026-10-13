@@ -13,6 +13,7 @@ import javafx.scene.layout.HBox;
 public class RunBar extends HBox {
 
     private final Label status = new Label("Listo");
+    private volatile String lastError;
 
     public RunBar(Interpreter interpreter, Program program) {
         setSpacing(10);
@@ -27,6 +28,7 @@ public class RunBar extends HBox {
         stop.setDisable(true);
 
         run.setOnAction(e -> {
+            lastError = null;
             interpreter.run(program);
             run.setDisable(true);
             pause.setDisable(false);
@@ -52,9 +54,15 @@ public class RunBar extends HBox {
             }
 
             @Override
+            public void onError(String message) {
+                lastError = message; // se muestra en onFinished, que llega justo después
+            }
+
+            @Override
             public void onFinished(boolean completed) {
                 Platform.runLater(() -> {
-                    status.setText(completed ? "Programa terminado" : "Detenido");
+                    if (lastError != null) status.setText("Error: " + lastError);
+                    else status.setText(completed ? "Programa terminado" : "Detenido");
                     run.setDisable(false);
                     pause.setDisable(true);
                     pause.setText("⏸ Pausar");

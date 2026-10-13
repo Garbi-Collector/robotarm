@@ -1,13 +1,14 @@
 package garbi.com.robotarm.interpreter;
 
-import javafx.application.Platform;
-import javafx.beans.property.ReadOnlyBooleanProperty;
-import javafx.beans.property.ReadOnlyBooleanWrapper;
 import garbi.com.robotarm.blocks.model.Block;
+import garbi.com.robotarm.blocks.model.MethodDef;
 import garbi.com.robotarm.blocks.model.Program;
 import garbi.com.robotarm.model.RobotArm;
 import garbi.com.robotarm.model.Servo;
 import garbi.com.robotarm.motion.MotionController;
+import javafx.application.Platform;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanWrapper;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,16 +23,19 @@ public class Interpreter {
     public interface Listener {
         void onBlockStart(Block block);
         void onFinished(boolean completed);
+        default void onError(String message) {}
     }
+
+    private static final int MAX_DEPTH = 16; // protección contra llamadas anidadas infinitas
 
     private final RobotArm arm;
     private final MotionController motion;
     private final Object pauseLock = new Object();
     private final ReadOnlyBooleanWrapper running = new ReadOnlyBooleanWrapper(false);
 
-
     private volatile Thread thread;
     private volatile boolean paused;
+    private volatile Program program;
     private volatile Listener listener = new Listener() {
         public void onBlockStart(Block block) {}
         public void onFinished(boolean completed) {}
@@ -45,28 +49,28 @@ public class Interpreter {
     public void setListener(Listener listener) { this.listener = listener; }
     public boolean isRunning() { return thread != null; }
     public boolean isPaused() { return paused; }
+
     /** Observable desde la UI: true mientras hay un programa en ejecución. */
     public ReadOnlyBooleanProperty runningProperty() { return running.getReadOnlyProperty(); }
 
-    public synchronized void run(Program program) {
+    public synchronized void run(Program p) {
         stop();
+        this.program = p;
         paused = false;
 
         Thread t = new Thread(() -> {
             boolean completed = false;
             try {
-                execute(program.getBlocks());
+                execute(p.getBlocks(), 0);
                 completed = true;
             } catch (InterruptedException | CancellationException | CompletionException ignored) {
                 // detenido por el usuario
             } catch (RuntimeException e) {
-                e.printStackTrace(); // programa inválido (servo inexistente, etc.)
+                listener.onError(e.getMessage() != null ? e.getMessage() : e.toString());
             } finally {
-                // Si ya arrancó otra ejecución, esta no avisa
                 if (thread == Thread.currentThread()) {
                     thread = null;
                     listener.onFinished(completed);
-                    // si mientras tanto arrancó otra ejecución, no se baja la bandera
                     Platform.runLater(() -> { if (thread == null) running.set(false); });
                 }
             }
@@ -95,15 +99,15 @@ public class Interpreter {
 
     // ---------- ejecución ----------
 
-    private void execute(List<Block> blocks) throws InterruptedException {
+    private void execute(List<Block> blocks, int depth) throws InterruptedException {
         for (Block block : blocks) {
             checkpoint();
             listener.onBlockStart(block);
-            runBlock(block);
+            runBlock(block, depth);
         }
     }
 
-    private void runBlock(Block block) throws InterruptedException {
+    private void runBlock(Block block, int depth) throws InterruptedException {
         switch (block.getType()) {
             case MOVE_SERVO -> move(Map.of(arm.byName(block.getServo()), block.getValue()));
             case OPEN_GRIPPER -> move(Map.of(arm.gripper(), arm.gripper().getMax()));
@@ -119,8 +123,21 @@ public class Interpreter {
             }
             case REPEAT -> {
                 for (int i = 0; i < (int) block.getValue(); i++) {
-                    execute(block.getChildren());
+                    execute(block.getChildren(), depth);
                 }
+            }
+            case CALL_METHOD -> {
+                if (block.getMethod() == null) {
+                    throw new IllegalStateException("Hay un bloque «Método» sin método elegido.");
+                }
+                MethodDef def = program.findMethod(block.getMethod());
+                if (def == null) {
+                    throw new IllegalStateException("El método «" + block.getMethod() + "» no existe en este proyecto.");
+                }
+                if (depth >= MAX_DEPTH) {
+                    throw new IllegalStateException("Demasiadas llamadas anidadas de métodos.");
+                }
+                execute(def.getBlocks(), depth + 1);
             }
         }
     }
@@ -133,7 +150,7 @@ public class Interpreter {
     private void checkpoint() throws InterruptedException {
         if (Thread.interrupted()) throw new InterruptedException();
         synchronized (pauseLock) {
-            while (paused) pauseLock.wait(); // interrupt() lo despierta
+            while (paused) pauseLock.wait();
         }
     }
 }

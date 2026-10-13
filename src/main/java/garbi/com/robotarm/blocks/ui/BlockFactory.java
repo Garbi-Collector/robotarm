@@ -16,6 +16,7 @@ public final class BlockFactory {
             case WAIT         -> Block.waitSeconds(1);
             case HOME         -> Block.home();
             case REPEAT       -> Block.repeat(2);
+            case CALL_METHOD  -> Block.callMethod(null);
         };
     }
 }

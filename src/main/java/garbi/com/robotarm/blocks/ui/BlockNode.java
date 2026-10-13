@@ -12,51 +12,61 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TextFormatter;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
-import java.util.function.DoubleConsumer;
 import java.util.function.Supplier;
 
 /**
  * Dibujo de un Block.
- *  - Constructor de 1 argumento: solo lectura (paleta, fantasma de arrastre).
- *  - Constructor de 3 argumentos: con campos editables que escriben en el modelo.
+ *  - BlockNode(block): solo lectura (paleta, fantasma de arrastre).
+ *  - BlockNode(block, ctx): editable. Los contenedores incluyen un BlockStack interior.
  */
-public class BlockNode extends javafx.scene.layout.HBox {
+public class BlockNode extends VBox {
 
     public static final double MAX_WIDTH = 320;
 
     private final Block block;
+    private final HBox header = new HBox(6);
+    private BlockStack inner; // solo en contenedores editables
 
     public BlockNode(Block block) {
-        this(block, null, null);
+        this(block, null);
     }
 
-    public BlockNode(Block block, RobotArm arm, ReadOnlyBooleanProperty locked) {
+    public BlockNode(Block block, BlockContext ctx) {
         this.block = block;
 
-        setAlignment(Pos.CENTER_LEFT);
-        setSpacing(6);
-        setPadding(new Insets(7, 14, 7, 14));
-        setMaxWidth(MAX_WIDTH);
+        header.setAlignment(Pos.CENTER_LEFT);
+        header.setPadding(new Insets(7, 14, 7, 14));
+        getChildren().add(header);
+
+        setMaxWidth(block.getType().isContainer() ? Double.MAX_VALUE : MAX_WIDTH);
         setCursor(Cursor.OPEN_HAND);
         setStyle("-fx-background-color: " + colorOf(block.getType()) + ";"
                 + "-fx-background-radius: 7;"
                 + "-fx-border-color: rgba(0,0,0,0.25);"
                 + "-fx-border-radius: 7;");
 
-        if (arm == null) getChildren().add(text(block.describe()));
-        else buildEditable(arm, locked);
+        if (ctx == null) header.getChildren().add(text(block.describe()));
+        else buildEditable(ctx);
     }
 
     public Block getBlock() { return block; }
 
+    /** Stack interior de un contenedor editable; null en cualquier otro caso. */
+    public BlockStack getInnerStack() { return inner; }
+
     // ---------- contenido editable ----------
 
-    private void buildEditable(RobotArm arm, ReadOnlyBooleanProperty locked) {
+    private void buildEditable(BlockContext ctx) {
+        RobotArm arm = ctx.getArm();
+        ReadOnlyBooleanProperty locked = ctx.getLocked();
+
         switch (block.getType()) {
             case MOVE_SERVO -> {
-                TextField angle = numberField(() -> servoRange(arm), locked);
+                TextField angle = numberField(() -> servoRange(arm), false, locked);
 
                 ComboBox<String> servo = new ComboBox<>();
                 arm.getServos().forEach(s -> servo.getItems().add(s.getName()));
@@ -71,25 +81,50 @@ public class BlockNode extends javafx.scene.layout.HBox {
                     angle.setText(format(block.getValue()));
                 });
 
-                getChildren().addAll(text("Mover"), servo, text("a"), angle, text("°"));
+                header.getChildren().addAll(text("Mover"), servo, text("a"), angle, text("°"));
             }
             case WAIT -> {
-                TextField seconds = numberField(() -> new double[]{0, 60}, locked);
-                getChildren().addAll(text("Esperar"), seconds, text("s"));
+                TextField seconds = numberField(() -> new double[]{0, 60}, false, locked);
+                header.getChildren().addAll(text("Esperar"), seconds, text("s"));
             }
-            default -> getChildren().add(text(block.describe()));
+            case REPEAT -> {
+                TextField times = numberField(() -> new double[]{1, 999}, true, locked);
+                header.getChildren().addAll(text("Repetir"), times, text("veces"));
+
+                inner = new BlockStack(block.getChildren(), ctx, true);
+                VBox.setMargin(inner, new Insets(0, 8, 8, 18));
+                getChildren().add(inner);
+            }
+            case CALL_METHOD -> {
+                ComboBox<String> methods = new ComboBox<>();
+                methods.getItems().addAll(ctx.getProgram().methodNames());
+                methods.setPromptText("elegir…");
+                methods.setPrefWidth(170);
+                methods.setValue(block.getMethod());
+                methods.disableProperty().bind(locked);
+                methods.valueProperty().addListener((o, old, name) -> {
+                    if (name != null) block.setMethod(name);
+                });
+                header.getChildren().addAll(text("Método"), methods);
+
+                if (block.getMethod() != null && ctx.getProgram().findMethod(block.getMethod()) == null) {
+                    header.getChildren().add(text("⚠ no existe"));
+                }
+            }
+            default -> header.getChildren().add(text(block.describe()));
         }
     }
 
     /** Campo numérico: escribe en block.value al teclear, limitado al rango dado. */
-    private TextField numberField(Supplier<double[]> range, ReadOnlyBooleanProperty locked) {
+    private TextField numberField(Supplier<double[]> range, boolean integer,
+                                  ReadOnlyBooleanProperty locked) {
         TextField field = new TextField(format(block.getValue()));
         field.setPrefWidth(58);
         field.disableProperty().bind(locked);
 
-        // hasta 3 dígitos enteros y 2 decimales
+        String regex = integer ? "\\d{0,3}" : "\\d{0,3}([.,]\\d{0,2})?";
         field.setTextFormatter(new TextFormatter<String>(change ->
-                change.getControlNewText().matches("\\d{0,3}([.,]\\d{0,2})?") ? change : null));
+                change.getControlNewText().matches(regex) ? change : null));
 
         field.textProperty().addListener((o, old, text) -> {
             Double v = parse(text);
@@ -99,7 +134,6 @@ public class BlockNode extends javafx.scene.layout.HBox {
             }
         });
 
-        // al salir (o con Enter) el texto se corrige al valor real del modelo
         field.focusedProperty().addListener((o, was, focused) -> {
             if (!focused) field.setText(format(block.getValue()));
         });
@@ -130,7 +164,7 @@ public class BlockNode extends javafx.scene.layout.HBox {
         try {
             return Double.parseDouble(s.replace(',', '.'));
         } catch (NumberFormatException e) {
-            return null; // vacío o "." : se ignora hasta que haya un número válido
+            return null;
         }
     }
 
@@ -144,9 +178,10 @@ public class BlockNode extends javafx.scene.layout.HBox {
 
     private static String colorOf(BlockType type) {
         return switch (type) {
-            case MOVE_SERVO, HOME            -> "#4c97ff"; // movimiento
-            case OPEN_GRIPPER, CLOSE_GRIPPER -> "#9966ff"; // garra
-            case WAIT, REPEAT                -> "#ffab19"; // control
+            case MOVE_SERVO, HOME            -> "#4c97ff";
+            case OPEN_GRIPPER, CLOSE_GRIPPER -> "#9966ff";
+            case WAIT, REPEAT                -> "#ffab19";
+            case CALL_METHOD                 -> "#ff6680";
         };
     }
 }

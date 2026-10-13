@@ -6,7 +6,9 @@ public enum BlockType {
     CLOSE_GRIPPER("Cerrar garra", false),
     WAIT("Esperar", false),
     HOME("Posición inicial", false),
-    REPEAT("Repetir", true);
+    REPEAT("Repetir", true),
+    CALL_METHOD("Usar método", false);
+
 
     private final String label;
     private final boolean container;
