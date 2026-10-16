@@ -5,6 +5,7 @@ import garbi.com.robotarm.blocks.model.MethodDef;
 import garbi.com.robotarm.blocks.model.Program;
 import garbi.com.robotarm.model.RobotArm;
 import garbi.com.robotarm.model.Servo;
+import garbi.com.robotarm.motion.MotionBlockedException;
 import garbi.com.robotarm.motion.MotionController;
 import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyBooleanProperty;
@@ -63,8 +64,12 @@ public class Interpreter {
             try {
                 execute(p.getBlocks(), 0);
                 completed = true;
-            } catch (InterruptedException | CancellationException | CompletionException ignored) {
+            } catch (InterruptedException | CancellationException ignored) {
                 // detenido por el usuario
+            } catch (CompletionException e) {
+                if (e.getCause() instanceof MotionBlockedException) {
+                    listener.onError(e.getCause().getMessage());
+                }
             } catch (RuntimeException e) {
                 listener.onError(e.getMessage() != null ? e.getMessage() : e.toString());
             } finally {
@@ -138,6 +143,11 @@ public class Interpreter {
                     throw new IllegalStateException("Demasiadas llamadas anidadas de métodos.");
                 }
                 execute(def.getBlocks(), depth + 1);
+            }
+            case POSE -> {
+                Map<Servo, Double> targets = new LinkedHashMap<>();
+                block.getPose().forEach((name, angle) -> targets.put(arm.byName(name), angle));
+                if (!targets.isEmpty()) move(targets);
             }
         }
     }

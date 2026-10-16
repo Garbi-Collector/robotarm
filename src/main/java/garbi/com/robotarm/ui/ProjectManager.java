@@ -1,6 +1,7 @@
 package garbi.com.robotarm.ui;
 
 import garbi.com.robotarm.blocks.model.Program;
+import garbi.com.robotarm.persistence.AppPaths;
 import garbi.com.robotarm.persistence.ProjectStorage;
 import javafx.scene.control.Alert;
 import javafx.scene.control.ButtonBar;
@@ -21,7 +22,6 @@ public class ProjectManager {
 
     private Path file;              // null = proyecto nuevo, aún sin archivo
     private String savedSnapshot;
-    private File lastDir;
 
     public ProjectManager(Stage stage, Program program, Runnable refreshUi) {
         this.stage = stage;
@@ -60,7 +60,7 @@ public class ProjectManager {
             program.loadFrom(loaded);
             file = path;
             savedSnapshot = ProjectStorage.snapshot(program);
-            remember(path);
+            AppPaths.remember("project", path);
             refreshUi.run();
             return true;
         } catch (IOException e) {
@@ -116,7 +116,7 @@ public class ProjectManager {
             ProjectStorage.saveProject(program, path);
             file = path;
             savedSnapshot = ProjectStorage.snapshot(program);
-            remember(path);
+            AppPaths.remember("project", path);
             return true;
         } catch (IOException e) {
             Dialogs.error(stage, "No se pudo guardar el proyecto:\n" + e.getMessage());
@@ -129,11 +129,7 @@ public class ProjectManager {
         fc.setTitle(title);
         fc.getExtensionFilters().add(
                 new FileChooser.ExtensionFilter("Proyecto Robot Arm (*.raa)", "*.raa"));
-        if (lastDir != null && lastDir.isDirectory()) fc.setInitialDirectory(lastDir);
+        fc.setInitialDirectory(AppPaths.startDir("project", AppPaths.projectsDir()));
         return fc;
-    }
-
-    private void remember(Path path) {
-        if (path.getParent() != null) lastDir = path.getParent().toFile();
     }
 }

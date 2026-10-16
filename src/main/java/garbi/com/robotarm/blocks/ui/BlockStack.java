@@ -1,12 +1,16 @@
 package garbi.com.robotarm.blocks.ui;
 
+import garbi.com.robotarm.blocks.model.Block;
+import garbi.com.robotarm.blocks.model.BlockType;
+import garbi.com.robotarm.blocks.model.MethodDef;
+import javafx.geometry.Insets;
+import javafx.scene.Node;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
-import java.util.ArrayList;
-import garbi.com.robotarm.blocks.model.Block;
-import javafx.geometry.Insets;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.layout.VBox;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** Columna de bloques que dibuja una lista del modelo. Puede ser la raíz o el interior de un contenedor. */
@@ -28,7 +32,7 @@ public class BlockStack extends VBox {
         setSpacing(4);
         if (nested) {
             setPadding(new Insets(6));
-            setMinHeight(34);          // hueco visible aunque esté vacío
+            setMinHeight(34);
             setStyle(NESTED_STYLE);
         } else {
             setPadding(new Insets(8));
@@ -40,9 +44,22 @@ public class BlockStack extends VBox {
     public List<Block> getModel() { return model; }
     public boolean isNested() { return nested; }
 
-    /** Resalta el stack interior cuando es el destino de una suelta. */
     public void setHighlighted(boolean on) {
         if (nested) setStyle(on ? NESTED_HOVER : NESTED_STYLE);
+    }
+
+    /** Busca, a cualquier profundidad, el nodo que dibuja ese bloque. */
+    public BlockNode findNode(Block target) {
+        for (Node n : getChildren()) {
+            BlockNode bn = (BlockNode) n;
+            if (bn.getBlock() == target) return bn;
+            BlockStack inner = bn.getInnerStack();
+            if (inner != null) {
+                BlockNode found = inner.findNode(target);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     /** Vuelve a dibujar todo (incluidos los anidados) a partir del modelo. */
@@ -56,16 +73,45 @@ public class BlockStack extends VBox {
         }
     }
 
-    /** Clic derecho: guardar este bloque y los siguientes de su lista como método. */
     private void attachContextMenu(BlockNode node, int index) {
         node.setOnContextMenuRequested(e -> {
             e.consume(); // solo responde el bloque más interno
-            if (ctx.getOnSaveMethod() == null) return;
+            if (ctx.isLocked()) return;
 
-            MenuItem save = new MenuItem("Guardar como método (este bloque y los siguientes)…");
-            save.setOnAction(a -> ctx.getOnSaveMethod()
-                    .accept(new ArrayList<>(model.subList(index, model.size()))));
-            new ContextMenu(save).show(node, e.getScreenX(), e.getScreenY());
+            Block block = model.get(index);
+            ContextMenu menu = new ContextMenu();
+
+            if (block.getType() == BlockType.CALL_METHOD) {
+                MethodDef def = ctx.getProgram().findMethod(block.getMethod());
+                if (def != null) {
+                    MenuItem expand = new MenuItem("Expandir método en bloques");
+                    expand.setOnAction(a -> {
+                        List<Block> copies = new ArrayList<>();
+                        for (Block b : def.getBlocks()) copies.add(b.copy());
+                        model.remove(index);
+                        model.addAll(index, copies);
+                        refresh();
+                    });
+                    menu.getItems().addAll(expand, new SeparatorMenuItem());
+                }
+            }
+
+            MenuItem duplicate = new MenuItem("Duplicar");
+            duplicate.setOnAction(a -> { model.add(index + 1, block.copy()); refresh(); });
+
+            MenuItem delete = new MenuItem("Eliminar");
+            delete.setOnAction(a -> { model.remove(index); refresh(); });
+
+            menu.getItems().addAll(duplicate, delete);
+
+            if (ctx.getOnSaveMethod() != null) {
+                MenuItem save = new MenuItem("Guardar como método (este bloque y los siguientes)…");
+                save.setOnAction(a -> ctx.getOnSaveMethod()
+                        .accept(new ArrayList<>(model.subList(index, model.size()))));
+                menu.getItems().addAll(new SeparatorMenuItem(), save);
+            }
+
+            menu.show(node, e.getScreenX(), e.getScreenY());
         });
     }
 }

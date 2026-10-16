@@ -20,6 +20,7 @@ public class Palette extends VBox {
         getChildren().add(title);
 
         for (BlockType type : BlockType.values()) {
+            if (type == BlockType.POSE) continue;
             BlockNode item = new BlockNode(BlockFactory.create(type));
             drag.makePaletteItem(item, type);
             getChildren().add(item);

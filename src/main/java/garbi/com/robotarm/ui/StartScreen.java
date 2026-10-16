@@ -15,9 +15,9 @@ public class StartScreen extends VBox {
         setPadding(new Insets(30));
         setStyle("-fx-background-color: #2b2f36;");
 
-        Label title = new Label("Robot Arm Programmer");
+        Label title = new Label("RobotArm");
         title.setStyle("-fx-text-fill: white; -fx-font-size: 26px; -fx-font-weight: bold;");
-        Label subtitle = new Label("Programa tu brazo robótico con bloques");
+        Label subtitle = new Label("");
         subtitle.setStyle("-fx-text-fill: #aab2bd; -fx-font-size: 13px;");
         VBox.setMargin(subtitle, new Insets(0, 0, 18, 0));
 

@@ -1,8 +1,9 @@
 package garbi.com.robotarm.view3d;
 
-import garbi.com.robotarm.model.RobotArm;
+import garbi.com.robotarm.physics.PhysicsWorld;
 import javafx.scene.AmbientLight;
 import javafx.scene.Group;
+import javafx.scene.Node;
 import javafx.scene.PointLight;
 import javafx.scene.SceneAntialiasing;
 import javafx.scene.SubScene;
@@ -11,16 +12,16 @@ import javafx.scene.paint.Color;
 import javafx.scene.paint.PhongMaterial;
 import javafx.scene.shape.Box;
 
-/** Panel que contiene la escena 3D (suelo, luces, ejes y, luego, el brazo). */
+/** Panel con la escena 3D: suelo, luces, ejes, brazo y cajas. */
 public class Viewport3D extends Pane {
 
-    private final Group world = new Group();
+    private final Group world = new Group(); // sin transformaciones: la física depende de eso
     private final OrbitCamera orbit = new OrbitCamera();
 
-    public Viewport3D(RobotArm arm) {
+    public Viewport3D(Node robot, Node crates) {
         buildGround();
         buildAxes();
-        world.getChildren().add(new RobotView3D(arm));
+        world.getChildren().addAll(robot, crates);
 
         Group root = new Group(world, buildLights(), orbit.getRig());
 
@@ -35,19 +36,18 @@ public class Viewport3D extends Pane {
         getChildren().add(subScene);
     }
 
-    public Group getWorld() { return world; }
-
     private Group buildLights() {
         AmbientLight ambient = new AmbientLight(Color.gray(0.45));
         PointLight sun = new PointLight(Color.WHITE);
-        sun.setTranslateX(-300);
-        sun.setTranslateY(-600);
-        sun.setTranslateZ(-300);
+        sun.setTranslateX(-600);
+        sun.setTranslateY(-1200);
+        sun.setTranslateZ(-600);
         return new Group(ambient, sun);
     }
 
     private void buildGround() {
-        Box floor = new Box(800, 2, 800);
+        double size = PhysicsWorld.FLOOR_HALF * 2;
+        Box floor = new Box(size, 2, size);
         floor.setTranslateY(1); // la cara superior queda en y = 0
         floor.setMaterial(new PhongMaterial(Color.web("#4a505a")));
         world.getChildren().add(floor);
@@ -55,10 +55,9 @@ public class Viewport3D extends Pane {
 
     private void buildAxes() {
         world.getChildren().addAll(
-                axis(200, 2, 2, Color.RED, 100, 0, 0),     // X
-                axis(2, 200, 2, Color.LIME, 0, -100, 0),   // Y (hacia arriba = negativo)
-                axis(2, 2, 200, Color.DODGERBLUE, 0, 0, 100) // Z
-        );
+                axis(300, 2, 2, Color.RED, 150, 0, 0),
+                axis(2, 300, 2, Color.LIME, 0, -150, 0),
+                axis(2, 2, 300, Color.DODGERBLUE, 0, 0, 150));
     }
 
     private Box axis(double w, double h, double d, Color c, double x, double y, double z) {
@@ -69,6 +68,4 @@ public class Viewport3D extends Pane {
         b.setTranslateZ(z);
         return b;
     }
-
-
 }

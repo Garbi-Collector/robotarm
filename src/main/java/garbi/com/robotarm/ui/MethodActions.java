@@ -3,6 +3,7 @@ package garbi.com.robotarm.ui;
 import garbi.com.robotarm.blocks.model.Block;
 import garbi.com.robotarm.blocks.model.MethodDef;
 import garbi.com.robotarm.blocks.model.Program;
+import garbi.com.robotarm.persistence.AppPaths;
 import garbi.com.robotarm.persistence.ProjectStorage;
 import javafx.scene.control.ChoiceDialog;
 import javafx.scene.control.TextInputDialog;
@@ -21,7 +22,6 @@ public class MethodActions {
     private final Stage stage;
     private final Program program;
     private final Runnable refreshUi;
-    private File lastDir;
 
     public MethodActions(Stage stage, Program program, Runnable refreshUi) {
         this.stage = stage;
@@ -29,7 +29,7 @@ public class MethodActions {
         this.refreshUi = refreshUi;
     }
 
-    /** Crea un método a partir de estos bloques, lo añade al proyecto y ofrece guardarlo como .ram. */
+    /** Crea un méto do a partir de estos bloques, lo añade al proyecto y ofrece guardarlo como .ram. */
     public void saveFromBlocks(List<Block> blocks) {
         if (blocks.stream().anyMatch(Block::usesMethods)) {
             Dialogs.error(stage, "Un método no puede contener otros métodos (por ahora).");
@@ -118,7 +118,7 @@ public class MethodActions {
         }
         try {
             ProjectStorage.saveMethod(def, path);
-            if (path.getParent() != null) lastDir = path.getParent().toFile();
+            AppPaths.remember("method", path);
             Dialogs.info(stage, "Método guardado en:\n" + path);
         } catch (IOException e) {
             Dialogs.error(stage, "No se pudo guardar el método:\n" + e.getMessage());
@@ -144,7 +144,7 @@ public class MethodActions {
         fc.setTitle(title);
         fc.getExtensionFilters().add(
                 new FileChooser.ExtensionFilter("Método Robot Arm (*.ram)", "*.ram"));
-        if (lastDir != null && lastDir.isDirectory()) fc.setInitialDirectory(lastDir);
+        fc.setInitialDirectory(AppPaths.startDir("method", AppPaths.methodsDir()));
         return fc;
     }
 }

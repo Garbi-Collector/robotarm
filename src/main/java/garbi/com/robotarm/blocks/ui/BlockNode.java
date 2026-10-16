@@ -1,5 +1,7 @@
 package garbi.com.robotarm.blocks.ui;
 
+import javafx.scene.control.Tooltip;
+import javafx.scene.effect.DropShadow;
 import garbi.com.robotarm.blocks.model.Block;
 import garbi.com.robotarm.blocks.model.BlockType;
 import garbi.com.robotarm.model.RobotArm;
@@ -57,7 +59,10 @@ public class BlockNode extends VBox {
 
     /** Stack interior de un contenedor editable; null en cualquier otro caso. */
     public BlockStack getInnerStack() { return inner; }
-
+    /** Ilumina el bloque mientras se ejecuta. */
+    public void setActive(boolean on) {
+        setEffect(on ? new DropShadow(18, Color.web("#ffe600")) : null);
+    }
     // ---------- contenido editable ----------
 
     private void buildEditable(BlockContext ctx) {
@@ -110,6 +115,10 @@ public class BlockNode extends VBox {
                 if (block.getMethod() != null && ctx.getProgram().findMethod(block.getMethod()) == null) {
                     header.getChildren().add(text("⚠ no existe"));
                 }
+            }
+            case POSE -> {
+                header.getChildren().add(text(block.describe()));
+                Tooltip.install(this, new Tooltip(block.poseDetails()));
             }
             default -> header.getChildren().add(text(block.describe()));
         }
@@ -178,7 +187,7 @@ public class BlockNode extends VBox {
 
     private static String colorOf(BlockType type) {
         return switch (type) {
-            case MOVE_SERVO, HOME            -> "#4c97ff";
+            case MOVE_SERVO, HOME, POSE      -> "#4c97ff";
             case OPEN_GRIPPER, CLOSE_GRIPPER -> "#9966ff";
             case WAIT, REPEAT                -> "#ffab19";
             case CALL_METHOD                 -> "#ff6680";

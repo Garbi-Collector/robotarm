@@ -7,8 +7,8 @@ public enum BlockType {
     WAIT("Esperar", false),
     HOME("Posición inicial", false),
     REPEAT("Repetir", true),
-    CALL_METHOD("Usar método", false);
-
+    CALL_METHOD("Usar método", false),
+    POSE("Pose", false);
 
     private final String label;
     private final boolean container;

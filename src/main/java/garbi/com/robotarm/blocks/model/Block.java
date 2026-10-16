@@ -1,5 +1,7 @@
 package garbi.com.robotarm.blocks.model;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -18,6 +20,7 @@ public class Block {
     private double value;
     private String method;
     private List<Block> children = new ArrayList<>();
+    private Map<String, Double> pose;
 
     /** Lo usa Gson al leer archivos. */
     private Block() {}
@@ -29,6 +32,11 @@ public class Block {
         Block b = new Block(BlockType.MOVE_SERVO);
         b.servo = servo;
         b.value = angle;
+        return b;
+    }
+    public static Block pose(Map<String, Double> angles) {
+        Block b = new Block(BlockType.POSE);
+        b.pose = new LinkedHashMap<>(angles);
         return b;
     }
     public static Block openGripper()  { return new Block(BlockType.OPEN_GRIPPER); }
@@ -63,6 +71,13 @@ public class Block {
     public String getMethod() { return method; }
     public void setMethod(String method) { this.method = method; }
     public List<Block> getChildren() { return children; }
+    public Map<String, Double> getPose() { return pose == null ? Map.of() : pose; }
+
+    public String poseDetails() {
+        StringBuilder sb = new StringBuilder();
+        getPose().forEach((k, v) -> sb.append(k).append(": ").append(Math.round(v)).append("°\n"));
+        return sb.toString().trim();
+    }
 
     /** Copia profunda (incluye los hijos). */
     public Block copy() {
@@ -70,6 +85,7 @@ public class Block {
         b.servo = servo;
         b.value = value;
         b.method = method;
+        if (pose != null) b.pose = new LinkedHashMap<>(pose);
         for (Block c : children) b.children.add(c.copy());
         return b;
     }
@@ -94,6 +110,7 @@ public class Block {
             case WAIT        -> "Esperar " + value + " s";
             case REPEAT      -> "Repetir " + Math.round(value) + " veces";
             case CALL_METHOD -> "Método " + (method == null ? "…" : method);
+            case POSE -> "Pose (" + getPose().size() + " servos)";
             default          -> type.getLabel();
         };
     }

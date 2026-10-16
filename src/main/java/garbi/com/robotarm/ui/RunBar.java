@@ -2,6 +2,7 @@ package garbi.com.robotarm.ui;
 
 import garbi.com.robotarm.blocks.model.Block;
 import garbi.com.robotarm.blocks.model.Program;
+import garbi.com.robotarm.blocks.ui.ExecutionHighlighter;
 import garbi.com.robotarm.interpreter.Interpreter;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
@@ -15,7 +16,7 @@ public class RunBar extends HBox {
     private final Label status = new Label("Listo");
     private volatile String lastError;
 
-    public RunBar(Interpreter interpreter, Program program) {
+    public RunBar(Interpreter interpreter, Program program, ExecutionHighlighter highlighter) {
         setSpacing(10);
         setPadding(new Insets(8, 15, 8, 15));
         setAlignment(Pos.CENTER_LEFT);
@@ -29,6 +30,7 @@ public class RunBar extends HBox {
 
         run.setOnAction(e -> {
             lastError = null;
+            highlighter.clear();
             interpreter.run(program);
             run.setDisable(true);
             pause.setDisable(false);
@@ -50,7 +52,10 @@ public class RunBar extends HBox {
         interpreter.setListener(new Interpreter.Listener() {
             @Override
             public void onBlockStart(Block block) {
-                Platform.runLater(() -> status.setText("Ejecutando: " + block.describe()));
+                Platform.runLater(() -> {
+                    status.setText("Ejecutando: " + block.describe());
+                    highlighter.show(block);
+                });
             }
 
             @Override
@@ -61,6 +66,7 @@ public class RunBar extends HBox {
             @Override
             public void onFinished(boolean completed) {
                 Platform.runLater(() -> {
+                    highlighter.clear();
                     if (lastError != null) status.setText("Error: " + lastError);
                     else status.setText(completed ? "Programa terminado" : "Detenido");
                     run.setDisable(false);

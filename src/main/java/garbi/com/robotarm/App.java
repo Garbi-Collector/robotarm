@@ -1,10 +1,14 @@
 package garbi.com.robotarm;
 
+import javafx.scene.image.Image;
+import java.util.Objects;
+import garbi.com.robotarm.persistence.AppPaths;
+import garbi.com.robotarm.physics.PhysicsWorld;
+import garbi.com.robotarm.ui.CratePanel;
+import garbi.com.robotarm.view3d.RobotView3D;
+import javafx.scene.layout.VBox;
 import garbi.com.robotarm.blocks.model.Program;
-import garbi.com.robotarm.blocks.ui.BlockContext;
-import garbi.com.robotarm.blocks.ui.DragController;
-import garbi.com.robotarm.blocks.ui.Palette;
-import garbi.com.robotarm.blocks.ui.Workspace;
+import garbi.com.robotarm.blocks.ui.*;
 import garbi.com.robotarm.interpreter.Interpreter;
 import garbi.com.robotarm.model.RobotArm;
 import garbi.com.robotarm.motion.MotionController;
@@ -46,10 +50,24 @@ public class App extends Application {
 
     @Override
     public void start(Stage stage) {
+        AppPaths.ensureFolders();
         this.stage = stage;
 
+        Image icon = new Image(
+                Objects.requireNonNull(
+                        getClass().getResourceAsStream("/assets/robotarm.png"),
+                        "No se encontró /assets/robotarm.png"
+                )
+        );
+
+        stage.getIcons().add(icon);
+
+
+
         RobotArm arm = new RobotArm();
-        MotionController motion = new MotionController();
+        RobotView3D robotView = new RobotView3D(arm);
+        PhysicsWorld physics = new PhysicsWorld(robotView.getColliders());
+        MotionController motion = new MotionController(arm, physics);
         interpreter = new Interpreter(arm, motion);
         Program program = new Program();
 
@@ -61,9 +79,17 @@ public class App extends Application {
 
         // editor de bloques
         Workspace workspace = new Workspace(program, ctx);
+        ExecutionHighlighter highlighter = new ExecutionHighlighter(workspace.getStack());
         ScrollPane workspaceScroll = new ScrollPane(workspace);
         workspaceScroll.setFitToWidth(true);
-        workspaceScroll.setFitToHeight(true);
+        workspaceScroll.setFitToHeight(false);   // antes true: impedía el scroll
+        workspaceScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        workspaceScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+
+        // el área de trabajo ocupa al menos toda la altura visible (para poder soltar bloques en el espacio vacío),
+        // y crece más allá cuando hay muchos bloques
+        workspaceScroll.viewportBoundsProperty().addListener((o, old, b) ->
+                workspace.setMinHeight(b.getHeight()));
 
         DragController drag = new DragController(
                 dragLayer, workspaceScroll, workspace.getStack(), ctx);
@@ -73,7 +99,12 @@ public class App extends Application {
         editor.setPrefWidth(680);
 
         // panel de control manual
-        ScrollPane right = new ScrollPane(new ControlPanel(arm, motion));
+        ControlPanel controls = new ControlPanel(arm, motion, interpreter.runningProperty(), pose -> {
+            program.getBlocks().add(pose);
+            workspace.getStack().refresh();
+        });
+        ScrollPane right = new ScrollPane(new VBox(controls,
+                new CratePanel(physics, interpreter.runningProperty())));
         right.setFitToWidth(true);
         right.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         right.setPrefWidth(280);
@@ -87,9 +118,9 @@ public class App extends Application {
         BorderPane root = new BorderPane();
         root.setTop(buildMenuBar(methods));
         root.setLeft(editor);
-        root.setCenter(new Viewport3D(arm));
+        root.setCenter(new Viewport3D(robotView, physics.getCrateLayer()));
         root.setRight(right);
-        root.setBottom(new RunBar(interpreter, program));
+        root.setBottom(new RunBar(interpreter, program, highlighter));
 
         editorScene = new Scene(new StackPane(root, dragLayer), 1500, 800);
         startScene = new Scene(new StartScreen(this::startNew, this::startOpen), 520, 340);
@@ -134,6 +165,8 @@ public class App extends Application {
     // ---------- barra de menú ----------
 
     private MenuBar buildMenuBar(MethodActions methods) {
+        MenuItem miFolder = item("Abrir carpeta de proyectos", null,
+                () -> getHostServices().showDocument(AppPaths.projectsDir().toUri().toString()));
         MenuItem miNew    = item("Nuevo proyecto",  "Shortcut+N",       () -> { if (project.confirmDiscard()) project.newProject(); });
         MenuItem miOpen   = item("Abrir…",          "Shortcut+O",       project::open);
         MenuItem miSave   = item("Guardar",         "Shortcut+S",       project::save);
@@ -153,7 +186,7 @@ public class App extends Application {
         miClose.disableProperty().bind(interpreter.runningProperty());
 
         Menu file = new Menu("Archivo", null, miNew, miOpen, new SeparatorMenuItem(),
-                miSave, miSaveAs, new SeparatorMenuItem(), miClose, miExit);
+                miSave, miSaveAs, new SeparatorMenuItem(), miFolder, miClose, miExit);
 
         MenuItem miImport = item("Importar método (.ram)…", null, methods::importMethods);
         MenuItem miExport = item("Exportar método…",         null, methods::exportMethod);
@@ -185,9 +218,9 @@ public class App extends Application {
     private void updateTitle() {
         if (stage.getScene() == editorScene) {
             stage.setTitle(project.displayName() + (project.isDirty() ? " *" : "")
-                    + " — Robot Arm Programmer");
+                    + " — Robot Arm");
         } else {
-            stage.setTitle("Robot Arm Programmer");
+            stage.setTitle("Robot Arm");
         }
     }
 }
