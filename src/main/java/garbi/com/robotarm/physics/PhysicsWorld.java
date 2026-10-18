@@ -1,5 +1,8 @@
 package garbi.com.robotarm.physics;
 
+
+import java.util.Collections;
+import java.util.Set;
 import com.bulletphysics.collision.broadphase.DbvtBroadphase;
 import com.bulletphysics.collision.dispatch.CollisionDispatcher;
 import com.bulletphysics.collision.dispatch.CollisionFlags;
@@ -40,7 +43,9 @@ import java.util.Map;
 public class PhysicsWorld {
 
     public static final double FLOOR_HALF = 800;              // medio lado del suelo (unidades)
-
+    private static final float REST_SPEED = 0.05f;   // m/s: por debajo, una caja apoyada se considera quieta
+    private final Set<Crate> touched = Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Vector3f vel = new Vector3f();
     private static final float S = 0.01f;                     // unidades -> metros
     private static final double SKIN = 0.5;                   // el brazo físico es 0.5 u más "gordo" que el visual
     private static final float MARGIN = 0.002f;               // margen de colisión de Bullet (m)
@@ -170,7 +175,7 @@ public class PhysicsWorld {
         RigidBody b = body(0.2f, shape, new DefaultMotionState(t));
         b.setFriction(1.0f);
         b.setRestitution(0f);
-        b.setDamping(0.05f, 0.1f);
+        b.setDamping(0.2f, 0.4f);
         b.setActivationState(CollisionObject.DISABLE_DEACTIVATION);
         world.addRigidBody(b);
 
@@ -184,7 +189,11 @@ public class PhysicsWorld {
     /** ¿Alguna pieza del brazo quedaría bajo el suelo? Se llama antes de simular. */
     public boolean armBelowFloor() {
         for (Part p : parts) {
-            if (p.movable && lowestY(p.collider.node()) > FLOOR_TOLERANCE) return true;
+            if (p.movable && lowestY(p.collider.node()) > FLOOR_TOLERANCE) {
+                System.out.printf("[SUELO] %s (%s) bajo el suelo: %.2f%n", p.collider.role(),
+                        p.collider.node().getClass().getSimpleName(), lowestY(p.collider.node()));
+                return true;
+            }
         }
         if (held != null && heldLowestY() > 1.0) return true;
         return false;
@@ -197,7 +206,9 @@ public class PhysicsWorld {
         }
         followHolder();
         world.stepSimulation((float) dt, 1, (float) dt);
-        return readContacts();
+        Contacts result = readContacts();
+        settleCrates();
+        return result;
     }
 
     /** Actualiza los nodos 3D de las cajas. Una vez por frame. */
@@ -210,8 +221,10 @@ public class PhysicsWorld {
     }
 
     private Contacts readContacts() {
+        touched.clear();
         Contacts result = new Contacts();
         Map<Crate, double[]> fingers = new IdentityHashMap<>();
+        Map<Crate, Double> armPen = new IdentityHashMap<>();
 
         int n = dispatcher.getNumManifolds();
         for (int i = 0; i < n; i++) {
@@ -220,13 +233,22 @@ public class PhysicsWorld {
 
             Part part = partOf.containsKey(a) ? partOf.get(a) : partOf.get(b);
             Crate crate = crateOf.containsKey(a) ? crateOf.get(a) : crateOf.get(b);
-            if (part == null || crate == null || !part.movable) continue;
+            if (part == null || crate == null || !part.movable || crate == held) continue;
+            touched.add(crate);
 
             double pen = 0;
             for (int j = 0; j < m.getNumContacts(); j++) {
                 pen = Math.max(pen, -m.getContactPoint(j).getDistance() / S); // distancia negativa = penetración
             }
-
+            //temporal------------------------------------------------
+            if (pen > 1.0) {
+                System.out.printf("[CONTACTO] %s (%s) vs caja en (%.0f, %.0f, %.0f) pen=%.2f%n",
+                        part.collider.role(), part.collider.node().getClass().getSimpleName(),
+                        crate.node.getLocalToSceneTransform().getTx(),
+                        crate.node.getLocalToSceneTransform().getTy(),
+                        crate.node.getLocalToSceneTransform().getTz(), pen);
+            }
+            //---------------------------------------------------------
             switch (part.collider.role()) {
                 case FINGER_LEFT, FINGER_RIGHT -> {
                     double[] f = fingers.computeIfAbsent(crate, k -> new double[2]);
@@ -234,7 +256,7 @@ public class PhysicsWorld {
                     f[side] = Math.max(f[side], pen);
                     result.fingerPenetration = Math.max(result.fingerPenetration, pen);
                 }
-                default -> result.armPenetration = Math.max(result.armPenetration, pen);
+                default -> armPen.merge(crate, pen, Math::max);
             }
         }
 
@@ -245,6 +267,10 @@ public class PhysicsWorld {
                 result.gripping = true;
                 gripCandidate = e.getKey();
             }
+        }
+        for (Map.Entry<Crate, Double> e : armPen.entrySet()) {
+            if (e.getKey() == gripCandidate) continue; // la caja que se está agarrando no cuenta como choque
+            result.armPenetration = Math.max(result.armPenetration, e.getValue());
         }
         return result;
     }
@@ -412,5 +438,15 @@ public class PhysicsWorld {
         held.body.getWorldTransform(t);
         double h = held.size / 2;
         return t.origin.y / S + h * (Math.abs(t.basis.m10) + Math.abs(t.basis.m11) + Math.abs(t.basis.m12));
+    }
+    /** Frena la deriva lateral de las cajas apoyadas que ninguna pieza del brazo está tocando. */
+    private void settleCrates() {
+        for (Crate c : crates) {
+            if (c == held || touched.contains(c)) continue;
+            c.body.getLinearVelocity(vel);
+            if (Math.abs(vel.y) < REST_SPEED && Math.hypot(vel.x, vel.z) < REST_SPEED) {
+                c.body.setLinearVelocity(new Vector3f(0, vel.y, 0));
+            }
+        }
     }
 }

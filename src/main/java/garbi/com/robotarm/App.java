@@ -123,7 +123,7 @@ public class App extends Application {
         root.setBottom(new RunBar(interpreter, program, highlighter));
 
         editorScene = new Scene(new StackPane(root, dragLayer), 1500, 800);
-        startScene = new Scene(new StartScreen(this::startNew, this::startOpen), 520, 340);
+        startScene = new Scene(new StartScreen(this::startNew, this::startOpen), 520, 420);
 
         // el título muestra el nombre del proyecto y un * si hay cambios sin guardar
         Timeline titleTimer = new Timeline(new KeyFrame(Duration.millis(500), e -> updateTitle()));
@@ -209,9 +209,15 @@ public class App extends Application {
     // ---------- ventana ----------
 
     private void switchTo(Scene scene) {
+        boolean editor = scene == editorScene;
+        stage.setMaximized(false);          // sin esto, sizeToScene no funciona al volver al menú
         stage.setScene(scene);
-        stage.sizeToScene();
-        stage.centerOnScreen();
+        if (editor) {
+            stage.setMaximized(true);
+        } else {
+            stage.sizeToScene();
+            stage.centerOnScreen();
+        }
         updateTitle();
     }
 
