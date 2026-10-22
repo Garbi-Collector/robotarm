@@ -18,11 +18,6 @@
 
     <dependencies>
         <dependency>
-            <groupId>cz.advel.jbullet</groupId>
-            <artifactId>jbullet</artifactId>
-            <version>20101010</version>
-        </dependency>
-        <dependency>
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-controls</artifactId>
             <version>${javafx.version}</version>

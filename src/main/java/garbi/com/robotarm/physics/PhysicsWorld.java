@@ -1,24 +1,5 @@
 package garbi.com.robotarm.physics;
 
-
-import java.util.Collections;
-import java.util.Set;
-import com.bulletphysics.collision.broadphase.DbvtBroadphase;
-import com.bulletphysics.collision.dispatch.CollisionDispatcher;
-import com.bulletphysics.collision.dispatch.CollisionFlags;
-import com.bulletphysics.collision.dispatch.CollisionObject;
-import com.bulletphysics.collision.dispatch.DefaultCollisionConfiguration;
-import com.bulletphysics.collision.narrowphase.PersistentManifold;
-import com.bulletphysics.collision.shapes.BoxShape;
-import com.bulletphysics.collision.shapes.CollisionShape;
-import com.bulletphysics.collision.shapes.CylinderShape;
-import com.bulletphysics.dynamics.DiscreteDynamicsWorld;
-import com.bulletphysics.dynamics.RigidBody;
-import com.bulletphysics.dynamics.RigidBodyConstructionInfo;
-import com.bulletphysics.dynamics.constraintsolver.SequentialImpulseConstraintSolver;
-import com.bulletphysics.linearmath.DefaultMotionState;
-import com.bulletphysics.linearmath.MotionState;
-import com.bulletphysics.linearmath.Transform;
 import javafx.scene.Group;
 import javafx.scene.Node;
 import javafx.scene.paint.Color;
@@ -26,38 +7,38 @@ import javafx.scene.paint.PhongMaterial;
 import javafx.scene.shape.Box;
 import javafx.scene.shape.Cylinder;
 import javafx.scene.transform.Affine;
+import javafx.scene.transform.Transform;
 
-import javax.vecmath.Vector3f;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Física de las cajas. Las unidades de la escena se convierten a metros (1 unidad = 1 cm).
- * Usar solo desde el hilo de JavaFX.
- *
- * Esto funciona porque ni el grupo raíz ni "world" tienen transformaciones: la transformación
- * local->escena de un nodo es directamente su posición en el mundo.
+ * Física de las cajas, con motor propio. Unidades de la escena: 1 unidad = 1 cm; "abajo" es +Y.
+ * Las cajas son cuerpos rígidos que se pueden apilar. Las piezas del brazo son cinemáticas: se mueven
+ * con sus nodos y empujan las cajas. Usar solo desde el hilo de JavaFX.
  */
 public class PhysicsWorld {
 
     public static final double FLOOR_HALF = 800;              // medio lado del suelo (unidades)
-    private static final float REST_SPEED = 0.05f;   // m/s: por debajo, una caja apoyada se considera quieta
-    private final Set<Crate> touched = Collections.newSetFromMap(new IdentityHashMap<>());
-    private final Vector3f vel = new Vector3f();
-    private static final float S = 0.01f;                     // unidades -> metros
-    private static final double SKIN = 0.5;                   // el brazo físico es 0.5 u más "gordo" que el visual
-    private static final float MARGIN = 0.002f;               // margen de colisión de Bullet (m)
-    private static final double FLOOR_TOLERANCE = 0.05;
-    private static final double GRIP_PENETRATION = 0.2;       // presión mínima de cada dedo para considerar "agarre"
-    private static final double FALL_LIMIT = 500;             // si una caja cae más abajo, reaparece
+
+    private static final Vec3 GRAVITY = new Vec3(0, 981, 0); // 9,81 m/s² en cm/s²
+    private static final double REST_OFFSET = 2;             // las cajas nuevas aparecen 2 unidades sobre el suelo
+    private static final double FLOOR_TOLERANCE = 0.05;      // el brazo no puede bajar de aquí
+    private static final double GRIP_PENETRATION = 0.2;      // presión mínima de cada dedo para considerar "agarre"
+    private static final double FALL_LIMIT = 500;           // si una caja cae más abajo, reaparece
     private static final int MAX_CRATES = 30;
+    private static final double WARM_DISTANCE = 0.5;         // distancia para considerar que un contacto es el mismo
+    private static final double SLEEP_SPEED = 0.5;          // unidades/s: por debajo, la caja está quieta
+    private static final double SLEEP_SPIN = 0.02;          // rad/s: por debajo, la caja no gira
+    private static final double SLEEP_TIME = 0.5;           // segundos quieta antes de dormirse
+    private static final double SCAN_STEP = 1;              // unidades que sube la caja nueva buscando hueco
+    private static final double MAX_SPAWN_HEIGHT = 1000;    // hasta dónde se busca hueco hacia arriba
+    private static final double CRATE_FRICTION = 1.0;
+    private static final double FLOOR_FRICTION = 0.8;
+    private static final double PART_FRICTION = 1.5;
     private static final String[] COLORS = {"#d9a05b", "#6fb3a2", "#c76b6b", "#7d8fd1", "#b08fd6"};
-    private Crate held;                 // caja sostenida por la garra (fuera de la simulación)
-    private Crate gripCandidate;        // caja que ambos dedos presionan en este paso
-    private final Transform heldOffset = new Transform();
-    private Node holder;                // grupo de la garra: referencia para "pegar" la caja
 
     /** Resultado de un paso de simulación. Las penetraciones están en unidades de la escena. */
     public static final class Contacts {
@@ -66,64 +47,66 @@ public class PhysicsWorld {
         public boolean gripping;          // ambos dedos presionan la misma caja
     }
 
-    private static final class PoseState extends MotionState {
-
-        final Transform t = new Transform();
-
-        @Override
-        public Transform getWorldTransform(Transform out) {
-            out.set(t);
-            return out;
-        }
-
-        @Override
-        public void setWorldTransform(Transform in) {
-            // Cinemático: la posición la controla JavaFX.
-        }
-    }
-
     private static final class Part {
         final ArmCollider collider;
-        final PoseState state;
+        final Body body;
         final boolean movable;
-        Part(ArmCollider collider, PoseState state, boolean movable) {
-            this.collider = collider; this.state = state; this.movable = movable;
+        Vec3 prevPos;
+        Mat3 prevRot;
+
+        Part(ArmCollider collider, Body body, boolean movable) {
+            this.collider = collider;
+            this.body = body;
+            this.movable = movable;
         }
     }
 
     private static final class Crate {
+        final Body body = new Body(true, CRATE_FRICTION);
         final Box node;
         final double size, x, z;
         final Affine pose = new Affine();
-        RigidBody body;
+        Vec3 holdPos = Vec3.ZERO;         // posición de la caja respecto a la garra, mientras está agarrada
+        Mat3 holdRot = Mat3.identity();
+        boolean asleep;                   // quieta: no se simula hasta que la toque algo que se mueva
+        double restTime;                  // segundos seguidos quieta
+
         Crate(double size, double x, double z, Box node) {
-            this.size = size; this.x = x; this.z = z; this.node = node;
+            this.size = size;
+            this.x = x;
+            this.z = z;
+            this.node = node;
+            body.setShape(new Vec3(size / 2, size / 2, size / 2));
         }
     }
 
-    private final CollisionDispatcher dispatcher;
-    private final DiscreteDynamicsWorld world;
+    private final Body floor = new Body(false, FLOOR_FRICTION);
+    private final Body holderBody = new Body(false, PART_FRICTION);
     private final List<Part> parts = new ArrayList<>();
     private final List<Crate> crates = new ArrayList<>();
-    private final Map<Object, Part> partOf = new IdentityHashMap<>();
-    private final Map<Object, Crate> crateOf = new IdentityHashMap<>();
+    private final Map<Body, Part> partByBody = new IdentityHashMap<>();
+    private final Map<Body, Crate> crateByBody = new IdentityHashMap<>();
     private final Group crateLayer = new Group();
-    private final Transform tmp = new Transform();
+    private List<Contact> previousContacts = List.of();   // contactos del paso anterior (arranque en caliente)
+    private final Node holder;            // grupo de la garra: referencia para "pegar" la caja
+    private Crate held;                   // caja sostenida por la garra
+    private Crate gripCandidate;          // caja que ambos dedos presionan en este paso
     private int colorIndex;
 
     public PhysicsWorld(List<ArmCollider> colliders) {
-        DefaultCollisionConfiguration config = new DefaultCollisionConfiguration();
-        dispatcher = new CollisionDispatcher(config);
-        world = new DiscreteDynamicsWorld(dispatcher, new DbvtBroadphase(),
-                new SequentialImpulseConstraintSolver(), config);
-        world.setGravity(new Vector3f(0, 9.81f, 0));      // en JavaFX "abajo" es +Y
-        world.getSolverInfo().numIterations = 30;          // más iteraciones = agarre más estable
-
-        addFloor();
-        for (ArmCollider c : colliders) addPart(c);
+        Node h = null;
         for (ArmCollider c : colliders) {
-            if (c.role() == ArmCollider.Role.FINGER_LEFT) holder = c.node().getParent();
+            boolean movable = c.role() != ArmCollider.Role.STATIC;
+            Part part = new Part(c, new Body(false, PART_FRICTION), movable);
+            part.body.kinematic = movable;
+            refresh(part.body, c.node());
+            part.prevPos = part.body.pos;
+            part.prevRot = part.body.rot;
+            parts.add(part);
+            partByBody.put(part.body, part);
+            if (c.role() == ArmCollider.Role.FINGER_LEFT) h = c.node().getParent();
         }
+        holder = h;
     }
 
     public Group getCrateLayer() { return crateLayer; }
@@ -139,76 +122,145 @@ public class PhysicsWorld {
         node.setMaterial(m);
 
         Crate c = new Crate(size, x, z, node);
+        double y = freeSpawnHeight(c, crates);
+        if (Double.isNaN(y)) return;      // no hay sitio libre ni arriba: no se agrega
         node.getTransforms().add(c.pose);
         crates.add(c);
+        crateByBody.put(c.body, c);
         crateLayer.getChildren().add(node);
         spawn(c);
+        c.body.pos = new Vec3(c.x, y, c.z);
+        updatePose(c);
+    }
+
+    /**
+     * Busca la altura de aparición más baja donde la caja no toca nada. Empieza en la altura normal y sube
+     * hasta encontrar un hueco. Devuelve NaN si no hay ninguno dentro de MAX_SPAWN_HEIGHT.
+     */
+    private double freeSpawnHeight(Crate c, List<Crate> others) {
+        for (Part p : parts) refresh(p.body, p.collider.node());
+        followHolder();
+        for (double y = spawnY(c); y > -MAX_SPAWN_HEIGHT; y -= SCAN_STEP) {
+            c.body.pos = new Vec3(c.x, y, c.z);
+            c.body.rot = Mat3.identity();
+            if (isClear(c.body, c, others)) return y;
+        }
+        return Double.NaN;
+    }
+
+    /** ¿La caja b cabe aquí sin tocar el suelo, el brazo ni otra caja de la lista? */
+    private boolean isClear(Body b, Crate self, List<Crate> others) {
+        if (b.lowestY() > 0) return false;                       // bajo el suelo
+        for (Part p : parts) {
+            if (Collision.intersects(b, p.body)) return false;
+        }
+        for (Crate o : others) {
+            if (o != self && Collision.intersects(b, o.body)) return false;
+        }
+        return true;
+    }
+
+    private static double spawnY(Crate c) {
+        return -(c.size / 2 + REST_OFFSET);
     }
 
     /** Devuelve todas las cajas a su posición inicial. */
-    public void resetCrates() { for (Crate c : crates) spawn(c); }
+    public void resetCrates() {
+        // se colocan una a una, buscando hueco entre las ya colocadas, para no superponerlas
+        List<Crate> placed = new ArrayList<>();
+        for (Crate c : crates) {
+            spawn(c);
+            double y = freeSpawnHeight(c, placed);
+            c.body.pos = new Vec3(c.x, Double.isNaN(y) ? spawnY(c) : y, c.z);
+            updatePose(c);
+            placed.add(c);
+        }
+    }
 
     public void clearCrates() {
-        for (Crate c : crates) {
-            if (c != held) world.removeRigidBody(c.body);
-            crateOf.remove(c.body);
-        }
-        held = null;
         crates.clear();
+        crateByBody.clear();
         crateLayer.getChildren().clear();
+        held = null;
+        gripCandidate = null;
     }
 
     private void spawn(Crate c) {
-        if (c.body != null) {
-            if (c == held) held = null;
-            else world.removeRigidBody(c.body);
-            crateOf.remove(c.body);
-        }
-        Transform t = new Transform();
-        t.setIdentity();
-        t.origin.set((float) (c.x * S), (float) (-(c.size / 2 + 2) * S), (float) (c.z * S));
-
-        float h = (float) (c.size / 2 * S);
-        BoxShape shape = new BoxShape(new Vector3f(h, h, h));
-        shape.setMargin(MARGIN);
-
-        RigidBody b = body(0.2f, shape, new DefaultMotionState(t));
-        b.setFriction(1.0f);
-        b.setRestitution(0f);
-        b.setDamping(0.2f, 0.4f);
-        b.setActivationState(CollisionObject.DISABLE_DEACTIVATION);
-        world.addRigidBody(b);
-
-        c.body = b;
-        crateOf.put(b, c);
+        if (c == held) held = null;
+        if (c == gripCandidate) gripCandidate = null;
+        c.body.pos = new Vec3(c.x, spawnY(c), c.z);
+        c.body.rot = Mat3.identity();
+        c.body.vel = Vec3.ZERO;
+        c.body.ang = Vec3.ZERO;
+        c.asleep = false;
+        c.restTime = 0;
         updatePose(c);
     }
 
     // ---------- simulación ----------
 
-    /** ¿Alguna pieza del brazo quedaría bajo el suelo? Se llama antes de simular. */
+    /** ¿Alguna pieza del brazo quedaría bajo el suelo, o la caja agarrada demasiado abajo? Se llama antes de simular. */
     public boolean armBelowFloor() {
         for (Part p : parts) {
-            if (p.movable && lowestY(p.collider.node()) > FLOOR_TOLERANCE) {
-                System.out.printf("[SUELO] %s (%s) bajo el suelo: %.2f%n", p.collider.role(),
-                        p.collider.node().getClass().getSimpleName(), lowestY(p.collider.node()));
-                return true;
-            }
-        }
-        if (held != null && heldLowestY() > 1.0) return true;
-        return false;
-    }
-
-    /** Copia la pose actual del brazo, avanza la física dt segundos y devuelve los contactos. */
-    public Contacts step(double dt) {
-        for (Part p : parts) {
-            if (p.movable) fill(p.state.t, p.collider.node().getLocalToSceneTransform());
+            if (!p.movable) continue;
+            refresh(p.body, p.collider.node());
+            if (p.body.lowestY() > FLOOR_TOLERANCE) return true;
         }
         followHolder();
-        world.stepSimulation((float) dt, 1, (float) dt);
-        Contacts result = readContacts();
-        settleCrates();
+        return held != null && held.body.lowestY() > 1.0;
+    }
+
+    /** Avanza la física dt segundos y devuelve los contactos del brazo con las cajas. */
+    public Contacts step(double dt) {
+        for (Part p : parts) {
+            refresh(p.body, p.collider.node());
+            if (p.movable) kinematicVelocity(p, dt);
+        }
+        followHolder();
+
+        List<Contact> contacts = collect();
+        wakeTouching(contacts);
+        Contacts result = measure(contacts);
+        for (Crate c : crates) {
+            if (c != held && !c.asleep) c.body.vel = c.body.vel.add(GRAVITY.scale(dt));
+        }
+        warmStart(contacts);
+        ContactSolver.prepare(contacts, dt);
+        ContactSolver.solve(contacts);
+        previousContacts = contacts;
+        for (Crate c : crates) {
+            if (c != held && !c.asleep) {
+                integrate(c.body, dt);
+                updateSleep(c, dt);
+            }
+        }
         return result;
+    }
+
+    /** Una caja dormida se despierta si la toca otra caja que se mueve o una pieza del brazo. */
+    private void wakeTouching(List<Contact> cs) {
+        for (Contact c : cs) {
+            wakeIfTouched(c.a, c.b);
+            wakeIfTouched(c.b, c.a);
+        }
+    }
+
+    private void wakeIfTouched(Body maybeSleeping, Body other) {
+        Crate c = crateByBody.get(maybeSleeping);
+        if (c == null || !c.asleep) return;
+        Crate o = crateByBody.get(other);
+        if (other.kinematic || (o != null && !o.asleep)) c.asleep = false;
+    }
+
+    /** Una caja quieta durante un rato deja de simularse. Así no queda ni el mínimo temblor ni deriva. */
+    private static void updateSleep(Crate c, double dt) {
+        boolean still = c.body.vel.length() < SLEEP_SPEED && c.body.ang.length() < SLEEP_SPIN;
+        c.restTime = still ? c.restTime + dt : 0;
+        if (c.restTime > SLEEP_TIME) {
+            c.asleep = true;
+            c.body.vel = Vec3.ZERO;
+            c.body.ang = Vec3.ZERO;
+        }
     }
 
     /** Actualiza los nodos 3D de las cajas. Una vez por frame. */
@@ -216,237 +268,180 @@ public class PhysicsWorld {
         followHolder();
         for (Crate c : crates) {
             updatePose(c);
-            if (c != held && tmp.origin.y / S > FALL_LIMIT) spawn(c); // se cayó de la mesa
+            if (c != held && c.body.pos.y() > FALL_LIMIT) spawn(c);   // se cayó del suelo
         }
     }
 
-    private Contacts readContacts() {
-        touched.clear();
-        Contacts result = new Contacts();
-        Map<Crate, double[]> fingers = new IdentityHashMap<>();
-        Map<Crate, Double> armPen = new IdentityHashMap<>();
-
-        int n = dispatcher.getNumManifolds();
-        for (int i = 0; i < n; i++) {
-            PersistentManifold m = dispatcher.getManifoldByIndexInternal(i);
-            Object a = m.getBody0(), b = m.getBody1();
-
-            Part part = partOf.containsKey(a) ? partOf.get(a) : partOf.get(b);
-            Crate crate = crateOf.containsKey(a) ? crateOf.get(a) : crateOf.get(b);
-            if (part == null || crate == null || !part.movable || crate == held) continue;
-            touched.add(crate);
-
-            double pen = 0;
-            for (int j = 0; j < m.getNumContacts(); j++) {
-                pen = Math.max(pen, -m.getContactPoint(j).getDistance() / S); // distancia negativa = penetración
+    /**
+     * Contactos del paso. Los del suelo van al final: el solver de impulsos resuelve en orden, así que lo
+     * último que aplica es lo que queda cumplido. Si el brazo empuja una caja contra el suelo, el suelo debe
+     * ganar; si no, la caja se hunde en el suelo.
+     */
+    private List<Contact> collect() {
+        List<Contact> out = new ArrayList<>();
+        List<Contact> ground = new ArrayList<>();
+        for (int i = 0; i < crates.size(); i++) {
+            Crate c = crates.get(i);
+            if (c == held) continue;
+            Collision.floor(floor, c.body, ground);
+            for (Part p : parts) Collision.boxBox(p.body, c.body, out);
+            for (int j = i + 1; j < crates.size(); j++) {
+                Crate d = crates.get(j);
+                if (d != held) Collision.boxBox(c.body, d.body, out);
             }
-            //temporal------------------------------------------------
-            if (pen > 1.0) {
-                System.out.printf("[CONTACTO] %s (%s) vs caja en (%.0f, %.0f, %.0f) pen=%.2f%n",
-                        part.collider.role(), part.collider.node().getClass().getSimpleName(),
-                        crate.node.getLocalToSceneTransform().getTx(),
-                        crate.node.getLocalToSceneTransform().getTy(),
-                        crate.node.getLocalToSceneTransform().getTz(), pen);
+        }
+        out.addAll(ground);
+        return out;
+    }
+
+    /** Mide penetraciones del brazo y detecta si la garra sujeta una caja. */
+    private Contacts measure(List<Contact> cs) {
+        Contacts r = new Contacts();
+        Map<Body, double[]> fingers = new IdentityHashMap<>();   // por caja: profundidad [izquierdo, derecho]
+        Map<Body, Double> arm = new IdentityHashMap<>();         // por caja: profundidad máxima del brazo
+
+        for (Contact c : cs) {
+            Part part = partByBody.get(c.a);
+            Body other = c.b;
+            if (part == null) {
+                part = partByBody.get(c.b);
+                other = c.a;
             }
-            //---------------------------------------------------------
+            if (part == null || !part.movable) continue;
+
             switch (part.collider.role()) {
                 case FINGER_LEFT, FINGER_RIGHT -> {
-                    double[] f = fingers.computeIfAbsent(crate, k -> new double[2]);
+                    double[] f = fingers.computeIfAbsent(other, k -> new double[2]);
                     int side = part.collider.role() == ArmCollider.Role.FINGER_LEFT ? 0 : 1;
-                    f[side] = Math.max(f[side], pen);
-                    result.fingerPenetration = Math.max(result.fingerPenetration, pen);
+                    f[side] = Math.max(f[side], c.depth);
+                    r.fingerPenetration = Math.max(r.fingerPenetration, c.depth);
                 }
-                default -> armPen.merge(crate, pen, Math::max);
+                default -> arm.merge(other, c.depth, Math::max);
             }
         }
 
         gripCandidate = null;
-        for (Map.Entry<Crate, double[]> e : fingers.entrySet()) {
+        for (Map.Entry<Body, double[]> e : fingers.entrySet()) {
             double[] f = e.getValue();
             if (f[0] >= GRIP_PENETRATION && f[1] >= GRIP_PENETRATION) {
-                result.gripping = true;
-                gripCandidate = e.getKey();
+                r.gripping = true;
+                gripCandidate = crateByBody.get(e.getKey());
             }
         }
-        for (Map.Entry<Crate, Double> e : armPen.entrySet()) {
-            if (e.getKey() == gripCandidate) continue; // la caja que se está agarrando no cuenta como choque
-            result.armPenetration = Math.max(result.armPenetration, e.getValue());
+        for (Map.Entry<Body, Double> e : arm.entrySet()) {
+            if (crateByBody.get(e.getKey()) == gripCandidate) continue;   // la caja que se agarra no cuenta como choque
+            r.armPenetration = Math.max(r.armPenetration, e.getValue());
         }
-        return result;
+        return r;
     }
 
-    // ---------- construcción ----------
-
-    private void addFloor() {
-        BoxShape shape = new BoxShape(new Vector3f((float) (FLOOR_HALF * S), 0.05f, (float) (FLOOR_HALF * S)));
-        shape.setMargin(MARGIN);
-        Transform t = new Transform();
-        t.setIdentity();
-        t.origin.set(0, 0.05f, 0); // cara superior en y = 0 (abajo es +Y)
-        RigidBody floor = body(0f, shape, new DefaultMotionState(t));
-        floor.setFriction(0.8f);
-        world.addRigidBody(floor);
-    }
-
-    private void addPart(ArmCollider c) {
-        boolean fixed = c.role() == ArmCollider.Role.STATIC;
-        CollisionShape shape = shapeFor(c.node(), fixed ? 0 : SKIN);
-
-        PoseState state = new PoseState();
-        fill(state.t, c.node().getLocalToSceneTransform());
-
-        RigidBody b = body(0f, shape, state);
-        b.setFriction(1.5f);
-        if (!fixed) {
-            b.setCollisionFlags(b.getCollisionFlags() | CollisionFlags.KINEMATIC_OBJECT);
-            b.setActivationState(CollisionObject.DISABLE_DEACTIVATION);
+    /**
+     * Copia los impulsos del paso anterior a los contactos que siguen en el mismo sitio entre los mismos cuerpos.
+     */
+    private void warmStart(List<Contact> cs) {
+        for (Contact c : cs) {
+            for (Contact old : previousContacts) {
+                if (old.a == c.a && old.b == c.b && old.p.sub(c.p).length() < WARM_DISTANCE) {
+                    c.accN = old.accN;
+                    c.accT1 = old.accT1;
+                    c.accT2 = old.accT2;
+                    break;
+                }
+            }
         }
-        world.addRigidBody(b);
-
-        Part part = new Part(c, state, !fixed);
-        parts.add(part);
-        partOf.put(b, part);
     }
 
-    private static CollisionShape shapeFor(Node n, double skin) {
-        CollisionShape shape;
-        if (n instanceof Box b) {
-            shape = new BoxShape(new Vector3f(
-                    (float) ((b.getWidth() / 2 + skin) * S),
-                    (float) ((b.getHeight() / 2 + skin) * S),
-                    (float) ((b.getDepth() / 2 + skin) * S)));
-        } else if (n instanceof Cylinder c) {
-            float r = (float) ((c.getRadius() + skin) * S);
-            shape = new CylinderShape(new Vector3f(r, (float) ((c.getHeight() / 2 + skin) * S), r));
-        } else {
-            throw new IllegalArgumentException("Collider no soportado: " + n.getClass());
-        }
-        shape.setMargin(MARGIN);
-        return shape;
+    /** Velocidad lineal y angular de una pieza cinemática, a partir de su movimiento en este paso. */
+    private static void kinematicVelocity(Part p, double dt) {
+        Body b = p.body;
+        b.vel = b.pos.sub(p.prevPos).scale(1 / dt);
+        Mat3 dR = b.rot.mul(p.prevRot.transpose());   // pequeño giro en ejes del mundo
+        b.ang = new Vec3(
+                (dR.get(2, 1) - dR.get(1, 2)) / (2 * dt),
+                (dR.get(0, 2) - dR.get(2, 0)) / (2 * dt),
+                (dR.get(1, 0) - dR.get(0, 1)) / (2 * dt));
+        p.prevPos = b.pos;
+        p.prevRot = b.rot;
     }
 
-    private static RigidBody body(float mass, CollisionShape shape, MotionState state) {
-        Vector3f inertia = new Vector3f(0, 0, 0);
-        if (mass > 0) shape.calculateLocalInertia(mass, inertia);
-        return new RigidBody(new RigidBodyConstructionInfo(mass, state, shape, inertia));
+    private static void integrate(Body b, double dt) {
+        b.pos = b.pos.add(b.vel.scale(dt));
+        b.rot = Mat3.rotation(b.ang.scale(dt)).mul(b.rot).orthonormalized();
     }
 
-    // ---------- conversiones y geometría ----------
-
-    private void updatePose(Crate c) {
-        c.body.getWorldTransform(tmp);
-        var m = tmp.basis;
-        var o = tmp.origin;
-        c.pose.setToTransform(
-                m.m00, m.m01, m.m02, o.x / S,
-                m.m10, m.m11, m.m12, o.y / S,
-                m.m20, m.m21, m.m22, o.z / S);
-    }
-
-    private static void fill(
-            Transform out,
-            javafx.scene.transform.Transform t
-    ) {
-        out.basis.m00 = (float) t.getMxx();
-        out.basis.m01 = (float) t.getMxy();
-        out.basis.m02 = (float) t.getMxz();
-
-        out.basis.m10 = (float) t.getMyx();
-        out.basis.m11 = (float) t.getMyy();
-        out.basis.m12 = (float) t.getMyz();
-
-        out.basis.m20 = (float) t.getMzx();
-        out.basis.m21 = (float) t.getMzy();
-        out.basis.m22 = (float) t.getMzz();
-
-        out.origin.set(
-                (float) (t.getTx() * S),
-                (float) (t.getTy() * S),
-                (float) (t.getTz() * S)
-        );
-    }
-
-    /** Punto más bajo (mayor Y) de la pieza en coordenadas del mundo. */
-    private static double lowestY(Node n) {
-        javafx.scene.transform.Transform t = n.getLocalToSceneTransform();
-        if (n instanceof Box b) {
-            double hx = b.getWidth() / 2, hy = b.getHeight() / 2, hz = b.getDepth() / 2;
-            double max = -1e9;
-            for (int sx = -1; sx <= 1; sx += 2)
-                for (int sy = -1; sy <= 1; sy += 2)
-                    for (int sz = -1; sz <= 1; sz += 2)
-                        max = Math.max(max, t.transform(sx * hx, sy * hy, sz * hz).getY());
-            return max;
-        }
-        if (n instanceof Cylinder c) {
-            double ay = t.deltaTransform(0, 1, 0).getY();
-            return t.getTy() + Math.abs(ay) * c.getHeight() / 2
-                    + c.getRadius() * Math.sqrt(Math.max(0, 1 - ay * ay));
-        }
-        return -1e9;
-    }
+    // ---------- agarre ----------
 
     public boolean isHolding() { return held != null; }
 
     /** Pega a la garra la caja que ambos dedos presionan. Devuelve false si no hay ninguna. */
     public boolean grab() {
         if (held != null || gripCandidate == null || holder == null) return false;
+        refresh(holderBody, holder);
         Crate c = gripCandidate;
-
-        Transform h = new Transform();
-        fill(h, holder.getLocalToSceneTransform());
-        Transform crateT = new Transform();
-        c.body.getWorldTransform(crateT);
-
-        heldOffset.set(h);          // offset = garra⁻¹ × caja
-        heldOffset.inverse();
-        heldOffset.mul(crateT);
-
-        world.removeRigidBody(c.body);
+        Mat3 inv = holderBody.rot.transpose();
+        c.holdRot = inv.mul(c.body.rot);                             // garra⁻¹ × caja
+        c.holdPos = inv.mul(c.body.pos.sub(holderBody.pos));
+        c.body.vel = Vec3.ZERO;
+        c.body.ang = Vec3.ZERO;
         held = c;
+        gripCandidate = null;
         return true;
     }
 
     /** Devuelve la caja a la simulación, quieta, para que caiga. */
     public void release() {
         if (held == null) return;
-        Crate c = held;
+        held.body.vel = Vec3.ZERO;
+        held.body.ang = Vec3.ZERO;
+        held.asleep = false;
+        held.restTime = 0;
         held = null;
-
-        Transform t = new Transform();
-        c.body.getWorldTransform(t);
-        c.body.setCenterOfMassTransform(t);
-        c.body.setLinearVelocity(new Vector3f(0, 0, 0));
-        c.body.setAngularVelocity(new Vector3f(0, 0, 0));
-        c.body.clearForces();
-        world.addRigidBody(c.body);
-        c.body.activate(true);
     }
 
     /** Coloca la caja sostenida donde le corresponde según la garra. */
     private void followHolder() {
         if (held == null || holder == null) return;
-        Transform h = new Transform();
-        fill(h, holder.getLocalToSceneTransform());
-        h.mul(heldOffset);
-        held.body.setWorldTransform(h);
+        refresh(holderBody, holder);
+        held.body.rot = holderBody.rot.mul(held.holdRot);
+        held.body.pos = holderBody.pos.add(holderBody.rot.mul(held.holdPos));
+        held.body.vel = Vec3.ZERO;
+        held.body.ang = Vec3.ZERO;
     }
 
-    /** Punto más bajo (mayor Y) de la caja sostenida, en unidades de la escena. */
-    private double heldLowestY() {
-        Transform t = new Transform();
-        held.body.getWorldTransform(t);
-        double h = held.size / 2;
-        return t.origin.y / S + h * (Math.abs(t.basis.m10) + Math.abs(t.basis.m11) + Math.abs(t.basis.m12));
+    // ---------- geometría y conversiones ----------
+
+    private static void updatePose(Crate c) {
+        Mat3 r = c.body.rot;
+        Vec3 p = c.body.pos;
+        c.pose.setToTransform(
+                r.get(0, 0), r.get(0, 1), r.get(0, 2), p.x(),
+                r.get(1, 0), r.get(1, 1), r.get(1, 2), p.y(),
+                r.get(2, 0), r.get(2, 1), r.get(2, 2), p.z());
     }
-    /** Frena la deriva lateral de las cajas apoyadas que ninguna pieza del brazo está tocando. */
-    private void settleCrates() {
-        for (Crate c : crates) {
-            if (c == held || touched.contains(c)) continue;
-            c.body.getLinearVelocity(vel);
-            if (Math.abs(vel.y) < REST_SPEED && Math.hypot(vel.x, vel.z) < REST_SPEED) {
-                c.body.setLinearVelocity(new Vector3f(0, vel.y, 0));
-            }
+
+    /**
+     * Copia posición, orientación y tamaño de un nodo de JavaFX al cuerpo. Los nodos que no son
+     * caja ni cilindro (como el grupo de la garra) solo aportan la pose.
+     * Un cilindro se aproxima por la caja que lo envuelve.
+     */
+    private static void refresh(Body body, Node n) {
+        Transform t = n.getLocalToSceneTransform();
+        Vec3 c0 = new Vec3(t.getMxx(), t.getMyx(), t.getMzx());
+        Vec3 c1 = new Vec3(t.getMxy(), t.getMyy(), t.getMzy());
+        Vec3 c2 = new Vec3(t.getMxz(), t.getMyz(), t.getMzz());
+        body.pos = new Vec3(t.getTx(), t.getTy(), t.getTz());
+        body.rot = Mat3.fromColumns(c0.normalized(), c1.normalized(), c2.normalized());
+        if (n instanceof Box || n instanceof Cylinder) {
+            Vec3 local = localHalf(n);
+            body.setShape(new Vec3(
+                    local.x() * c0.length(), local.y() * c1.length(), local.z() * c2.length()));
         }
+    }
+
+    /** Semiejes de la caja que envuelve al nodo, en su sistema local. */
+    private static Vec3 localHalf(Node n) {
+        if (n instanceof Box b) return new Vec3(b.getWidth() / 2, b.getHeight() / 2, b.getDepth() / 2);
+        if (n instanceof Cylinder c) return new Vec3(c.getRadius(), c.getHeight() / 2, c.getRadius());
+        throw new IllegalArgumentException("Collider no soportado: " + n.getClass());
     }
 }
