@@ -27,6 +27,8 @@ target/
 /nbbuild/
 /dist/
 /dist-input/
+/installers/
+/versiones/
 /nbdist/
 /.nb-gradle/
 build/
