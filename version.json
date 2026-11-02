@@ -1,6 +1,6 @@
 {
-  "version": "1.6.0",
-  "url": "https://github.com/Garbi-Collector/robotarm/releases/download/v1.6.0/RobotArm-1.6.0.msi",
-  "sha256": "6ec3a676fc179cd2553f2f807da896122acb0abf92b276e9f6fa99c7238318ab",
-  "notes": "segunda versión."
+  "version": "2.0.0",
+  "url": "https://github.com/Garbi-Collector/robotarm/releases/download/v2.0.0/RobotArm-2.0.0.msi",
+  "sha256": "2be329f4001bcb69a8c8f489b2e1216dc79492cde2514bef6b78cf3bd61b79e9",
+  "notes": "rabano."
 }
